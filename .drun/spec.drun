@@ -13,6 +13,15 @@ task "test" means "Runs the test suite":
 	step "Testing Gopher Textmate..."
 	run "go test ./..."
 
+task "test-full" means "Runs the extended test suite, including race":
+    step "Test"
+    run "go test ./..."
+    step "Race conditions"
+    run "go test -race ."
+    step "Benchmarking (takes a little while)"
+    run  "go test -bench ."
+    success "All tests succeeded"
+
 task "lint" means "Runs the linters":
 	if "golangci-lint" is available:
 		info "GolangCI Linter available"

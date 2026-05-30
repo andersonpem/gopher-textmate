@@ -22,19 +22,19 @@ The root package `textmate` is the high-level facade. Other applications import 
 package main
 
 import (
-	"fmt"
+    "fmt"
 
-	textmate "github.com/andersonpem/gopher-textmate"
-	"github.com/andersonpem/gopher-textmate/render"
+    textmate "github.com/andersonpem/gopher-textmate"
+    "github.com/andersonpem/gopher-textmate/render"
 )
 
 func main() {
-	h, _ := textmate.New(textmate.WithColorMode(render.TrueColor))
-	_, _ = h.LoadGrammarFile("grammars/php.tmLanguage.json")
-	_ = h.SetThemeBytes(textmate.DefaultThemeBytes())
+    h, _ := textmate.New(textmate.WithColorMode(render.TrueColor))
+    _, _ = h.LoadGrammarFile("grammars/php.tmLanguage.json")
+    _ = h.SetThemeBytes(textmate.DefaultThemeBytes())
 
-	out, _ := h.Highlight("source.php", `<?php echo "hi";`)
-	fmt.Print(out)
+    out, _ := h.Highlight("source.php", `<?php echo "hi";`)
+    fmt.Print(out)
 }
 ```
 
@@ -45,9 +45,9 @@ func main() {
 ```go
 lines, _ := h.Tokenize("source.php", src) // []textmate.Line, Line = []grammar.Token
 for _, line := range lines {
-	for _, tok := range line {
-		// tok.Start, tok.End are rune offsets; tok.Scopes is outer..inner
-	}
+    for _, tok := range line {
+        // tok.Start, tok.End are rune offsets; tok.Scopes is outer..inner
+    }
 }
 ```
 
@@ -56,9 +56,9 @@ for _, line := range lines {
 ```go
 var state *grammar.StateStack
 for _, line := range strings.Split(src, "\n") {
-	var toks textmate.Line
-	toks, state, _ = h.TokenizeLine("source.php", line, state)
-	_ = toks
+    var toks textmate.Line
+    toks, state, _ = h.TokenizeLine("source.php", line, state)
+    _ = toks
 }
 ```
 
@@ -82,7 +82,7 @@ doc.SetText(buffer)            // initial tokenize
 // On each keystroke:
 changed := doc.SetLine(cursorLine, newLineText) // returns only the lines that changed
 for _, i := range changed {
-	repaint(i, doc.RenderLine(i))               // or use doc.Render() for the whole buffer
+    repaint(i, doc.RenderLine(i))               // or use doc.Render() for the whole buffer
 }
 ```
 
@@ -90,13 +90,14 @@ for _, i := range changed {
 
 Measured on an Macbook tokenizing a ~500-line PHP file (`go test -bench .`):
 
-| Operation | Cost |
-|-----------|------|
-| Warm-up (compile all patterns, parallel) | ~350 ms, once |
-| Re-tokenize whole 500-line buffer | ~44 ms |
-| Incremental keystroke (`Document.SetLine`) | **~20 µs** |
+| Operation                                  | Cost          |
+| ------------------------------------------ | ------------- |
+| Warm-up (compile all patterns, parallel)   | ~350 ms, once |
+| Re-tokenize whole 500-line buffer          | ~44 ms        |
+| Incremental keystroke (`Document.SetLine`) | **~20 µs**    |
 
 Notes:
+
 - Run `Warmup` once at startup (ideally in a goroutine). Pattern compilation is the main one-time cost; matching is fast.
 - Tokens share immutable scope slices and begin/end scanners are cached, keeping per-line allocations low.
 
@@ -108,12 +109,12 @@ A `Highlighter` is safe for concurrent tokenization once all `LoadGrammar*` / `S
 
 The facade is built on exported packages you can use directly:
 
-| Package    | Responsibility |
-|------------|----------------|
-| `grammar`  | Grammar registry, rule compilation, `TokenizeLine` |
-| `theme`    | VSCode JSON theme parsing + scope-selector matching |
-| `render`   | Tokens + theme → ANSI (truecolor / 256 / none) |
-| `oniglib`  | regexp2-backed scanner, anchor handling, back-refs |
+| Package   | Responsibility                                      |
+| --------- | --------------------------------------------------- |
+| `grammar` | Grammar registry, rule compilation, `TokenizeLine`  |
+| `theme`   | VSCode JSON theme parsing + scope-selector matching |
+| `render`  | Tokens + theme → ANSI (truecolor / 256 / none)      |
+| `oniglib` | regexp2-backed scanner, anchor handling, back-refs  |
 
 ## CLI
 
@@ -143,9 +144,17 @@ Flags:
 
 ## Development
 
+It is advisable to use the [drun](https://github.com/phillarmonic/drun) task runner for development. It makes it easy to run routine tasks in a semantic way. Check the .drun/spec.drun to understand how the file works.
+
 ```bash
-go test ./...
-go test -race .   # concurrency test for the public API
+# For running only the tests:
+xdrun test
+# For running only the linter:
+xdrun lint
+# For running the full test suite including the time consuming tests:
+xdrun test-full
+# For running the whole CI lifecycle (test, lint)
+xdrun ci
 ```
 
 ## License
