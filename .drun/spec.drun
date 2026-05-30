@@ -1,0 +1,26 @@
+# drun (do-run) CLI is a fast, semantic task runner with 
+# its own powerful automation language. Effortless tasks, serious speed.
+# Learn more at https://github.com/phillarmonic/drun
+
+version: 2.0
+
+project "gopher-textmate" version "1.0":
+
+task "default" means "Welcome to drun v2":
+	info "Gopher Textmate task runner 🚀"
+
+task "test" means "Runs the test suite":
+	step "Testing Gopher Textmate..."
+	run "go test ./..."
+
+task "lint" means "Runs the linters":
+	if "golangci-lint" is available:
+		info "GolangCI Linter available"
+	else:
+		fail "GolangCI Linter is not available. Please install it"
+	step "Running linters"
+	run "golangci-lint run"
+
+task "ci" means "Runs the whole CI pipeline":
+	call task test
+	call task lint
