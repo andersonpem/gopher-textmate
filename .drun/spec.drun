@@ -23,10 +23,10 @@ task "test-full" means "Runs the extended test suite, including race":
     success "All tests succeeded"
 
 task "lint" means "Runs the linters":
-	if "golangci-lint" is available:
-		info "GolangCI Linter available"
-	else:
-		fail "GolangCI Linter is not available. Please install it"
+    if "golangci-lint" is available and version >= "2.12":
+      info "GolangCI Lint available and version satisfies requirements"
+    else:
+      fail "golangci-lint >= 2.12 is required"
 	step "Running linters"
 	run "golangci-lint run"
 
