@@ -4,6 +4,9 @@ A pure-Go (no cgo) [TextMate grammar](https://macromates.com/manual/en/language_
 
 It tokenizes source text into scoped tokens using TextMate grammars, resolves a VSCode-style JSON theme, and renders ANSI (truecolor / 256-color) output. The tokenizer follows the algorithm used by [`vscode-textmate`](https://github.com/microsoft/vscode-textmate), the de-facto reference implementation.
 
+<img width="1132" height="431" alt="php" src="https://github.com/user-attachments/assets/4b67b298-f9d1-453c-a139-6e9dca97730b" />
+
+
 ## Why pure Go?
 
 TextMate grammars rely on Oniguruma regular expressions (lookbehind, lookahead, `\G`, back-references, `\x{...}` codepoints) that Go's standard `regexp` (RE2) cannot handle. Instead of binding to Oniguruma via cgo, this library uses the pure-Go [`github.com/dlclark/regexp2/v2`](https://github.com/dlclark/regexp2) engine, so builds stay static and cross-compile cleanly. Oniguruma possessive quantifiers (`a++`) are rewritten as atomic groups (`(?>a+)`) to preserve their no-backtracking semantics.
@@ -121,6 +124,7 @@ The facade is built on exported packages you can use directly:
 ```bash
 go run ./cmd/gtm -grammar grammars/php.tmLanguage.json -scope source.php examples/sample.php
 ```
+<img width="1132" height="431" alt="php" src="https://github.com/user-attachments/assets/4b67b298-f9d1-453c-a139-6e9dca97730b" />
 
 Flags:
 
