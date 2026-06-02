@@ -136,14 +136,15 @@ Flags:
 
 ## Supported grammar features
 
-`match`, `begin`/`end`, `begin`/`while`, `include` (`#repo`, `$self`, `$base`, cross-grammar `scope.name#sub`), `repository`, `captures` / `beginCaptures` / `endCaptures` with nested `patterns`, `contentName`, `applyEndPatternLast`, dynamic end patterns via back-references (`\1`…`\9`), scope-name templates (`$1`, `${1:/downcase|upcase|capitalize}`), and basic `injections`.
+`match`, `begin`/`end`, `begin`/`while`, `include` (`#repo`, `$self`, `$base`, cross-grammar `scope.name#sub`), `repository`, `captures` / `beginCaptures` / `endCaptures` with nested `patterns`, `contentName`, `applyEndPatternLast`, dynamic end patterns via back-references (multi-digit and zero-padded, e.g. `\1`, `\12`, `\001`), `injections` (basic), and scope-name templates (`$1`, `${1}`) with the full set of TextMate transforms — `upcase`, `downcase`, `capitalize`/`titlecase`, `asciify`, `urlencode`, `shellescape`, `relative`, `number`, `duration`, `dirname`, `basename` — which may be chained, e.g. `${1:/downcase/capitalize}`.
 
 ## Known limitations
 
 - Themes: VSCode JSON format only (`.tmTheme` plist is not yet supported).
 - `$base` is treated as `$self` (identical for single-grammar tokenization).
 - Cross-grammar includes only resolve grammars that have been loaded; unresolved references are skipped, so mixed-language files highlight the languages whose grammars are present.
-- Oniguruma possessive quantifiers (`a++`) are normalized to greedy; the rare `\g<name>` subroutine call is unsupported and such a pattern simply never matches (graceful degradation).
+- The rare `\g<name>` subroutine call is unsupported and such a pattern simply never matches (graceful degradation).
+- `asciify` and `urlencode` transforms approximate macOS/ICU behavior (NFD + combining-mark stripping; RFC 3986 unreserved set), and `(?x)` extended-mode `#` comments containing unbalanced parentheses are not parsed.
 - Injection selector matching is basic; advanced exclusion selectors degrade gracefully.
 
 ## Development
