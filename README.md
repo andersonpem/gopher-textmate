@@ -6,7 +6,6 @@ It tokenizes source text into scoped tokens using TextMate grammars, resolves a 
 
 <img width="1132" height="431" alt="php" src="https://github.com/user-attachments/assets/4b67b298-f9d1-453c-a139-6e9dca97730b" />
 
-
 ## Why pure Go?
 
 TextMate grammars rely on Oniguruma regular expressions (lookbehind, lookahead, `\G`, back-references, `\x{...}` codepoints) that Go's standard `regexp` (RE2) cannot handle. Instead of binding to Oniguruma via cgo, this library uses the pure-Go [`github.com/dlclark/regexp2/v2`](https://github.com/dlclark/regexp2) engine, so builds stay static and cross-compile cleanly. Oniguruma possessive quantifiers (`a++`) are rewritten as atomic groups (`(?>a+)`) to preserve their no-backtracking semantics.
@@ -124,6 +123,7 @@ The facade is built on exported packages you can use directly:
 ```bash
 go run ./cmd/gtm -grammar grammars/php.tmLanguage.json -scope source.php examples/sample.php
 ```
+
 <img width="1132" height="431" alt="php" src="https://github.com/user-attachments/assets/4b67b298-f9d1-453c-a139-6e9dca97730b" />
 
 Flags:
@@ -151,6 +151,18 @@ Flags:
 
 It is advisable to use the [drun](https://github.com/phillarmonic/drun) task runner for development. It makes it easy to run routine tasks in a semantic way. Check the .drun/spec.drun to understand how the file works.
 
+### Requirements
+
+- `Go >=1.25`
+
+- `golangci-lint >= 2.12`
+
+- `gosec >= 2.27`
+
+- Drun >= 2.0
+
+Development lifecycle:
+
 ```bash
 # For running only the tests:
 xdrun test
@@ -158,8 +170,11 @@ xdrun test
 xdrun lint
 # For running the full test suite including the time consuming tests:
 xdrun test-full
-# For running the whole CI lifecycle (test, lint)
+# For running the whole CI lifecycle in fast mode (test, lint)
 xdrun ci
+# For running CI after you're done coding, and run the expensive tests
+# like race condition tests and fuzz
+xdrun ci-full
 ```
 
 ## License
