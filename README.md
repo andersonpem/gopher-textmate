@@ -159,7 +159,7 @@ It is advisable to use the [drun](https://github.com/phillarmonic/drun) task run
 
 - `gosec >= 2.27`
 
-- Drun >= 2.0
+- `drun >= 2.0`
 
 Development lifecycle:
 
