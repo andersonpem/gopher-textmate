@@ -3,6 +3,8 @@ name: CI
 on:
   pull_request:
     paths-ignore:
+      - ".drun/spec.drun"
+      - "*.md"
       - "**/*.md"
 
 permissions:
