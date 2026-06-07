@@ -388,8 +388,8 @@ func (g *Grammar) rootStack() *StateStack {
 
 // resolveScopeName expands a scope-name template that references match
 // captures, e.g. "keyword.control.$1.php" or "entity.name.tag.${1:/downcase}".
-// Supported transforms are /downcase, /upcase and /capitalize. Templates with
-// no "$" are returned unchanged.
+// Transforms (see applyTransforms) may be chained, e.g. "${1:/downcase/capitalize}".
+// Templates with no "$" are returned unchanged.
 func resolveScopeName(tmpl string, line []rune, groups []oniglib.Capture) string {
 	if !strings.ContainsRune(tmpl, '$') {
 		return tmpl
@@ -400,7 +400,7 @@ func resolveScopeName(tmpl string, line []rune, groups []oniglib.Capture) string
 		c := rs[i]
 		if c == '$' && i+1 < len(rs) {
 			if rs[i+1] >= '0' && rs[i+1] <= '9' {
-				b.WriteString(captureText(line, groups, int(rs[i+1]-'0'), ""))
+				b.WriteString(captureText(line, groups, int(rs[i+1]-'0'), nil))
 				i++
 				continue
 			}
@@ -410,8 +410,8 @@ func resolveScopeName(tmpl string, line []rune, groups []oniglib.Capture) string
 					j++
 				}
 				if j < len(rs) {
-					num, transform := parseGroupTemplate(string(rs[i+2 : j]))
-					b.WriteString(captureText(line, groups, num, transform))
+					num, transforms := parseGroupTemplate(string(rs[i+2 : j]))
+					b.WriteString(captureText(line, groups, num, transforms))
 					i = j
 					continue
 				}
@@ -422,21 +422,28 @@ func resolveScopeName(tmpl string, line []rune, groups []oniglib.Capture) string
 	return b.String()
 }
 
-func parseGroupTemplate(inner string) (int, string) {
+// parseGroupTemplate parses the body of a ${...} capture reference, returning
+// the group number and the list of transforms requested after the ':'. The
+// transforms are written as "/name" segments, e.g. "1:/downcase/capitalize".
+func parseGroupTemplate(inner string) (int, []string) {
 	num := inner
-	transform := ""
+	var transforms []string
 	if i := strings.IndexByte(inner, ':'); i >= 0 {
 		num = inner[:i]
-		transform = strings.TrimPrefix(inner[i+1:], "/")
+		for _, t := range strings.Split(inner[i+1:], "/") {
+			if t = strings.TrimSpace(t); t != "" {
+				transforms = append(transforms, t)
+			}
+		}
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(num))
 	if err != nil {
-		return -1, transform
+		return -1, transforms
 	}
-	return n, transform
+	return n, transforms
 }
 
-func captureText(line []rune, groups []oniglib.Capture, idx int, transform string) string {
+func captureText(line []rune, groups []oniglib.Capture, idx int, transforms []string) string {
 	if idx < 0 || idx >= len(groups) {
 		return ""
 	}
@@ -444,21 +451,7 @@ func captureText(line []rune, groups []oniglib.Capture, idx int, transform strin
 	if gp.Start < 0 || gp.End < 0 || gp.Start > gp.End || gp.End > len(line) {
 		return ""
 	}
-	s := string(line[gp.Start:gp.End])
-	switch transform {
-	case "downcase":
-		return strings.ToLower(s)
-	case "upcase":
-		return strings.ToUpper(s)
-	case "capitalize":
-		if s == "" {
-			return s
-		}
-		r := []rune(s)
-		return strings.ToUpper(string(r[0])) + string(r[1:])
-	default:
-		return s
-	}
+	return applyTransforms(string(line[gp.Start:gp.End]), transforms)
 }
 
 func pushScope(parent []string, names ...string) []string {

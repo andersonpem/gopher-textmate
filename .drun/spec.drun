@@ -5,6 +5,10 @@
 version: 2.0
 
 project "gopher-textmate" version "1.0":
+	requires tools:
+		go >= 1.25
+		golangci-lint >= 2.12
+		gosec
 
 task "default" means "Welcome to drun v2":
 	info "Gopher Textmate task runner 🚀"
@@ -12,6 +16,7 @@ task "default" means "Welcome to drun v2":
 task "test" means "Runs the test suite":
 	step "Testing Gopher Textmate..."
 	run "go test ./..."
+    success "Tests passed"
 
 task "test-full" means "Runs the extended test suite, including race":
     step "Test"
@@ -23,13 +28,38 @@ task "test-full" means "Runs the extended test suite, including race":
     success "All tests succeeded"
 
 task "lint" means "Runs the linters":
-    if "golangci-lint" is available and version >= "2.12":
-      info "GolangCI Lint available and version satisfies requirements"
-    else:
-      fail "golangci-lint >= 2.12 is required"
 	step "Running linters"
 	run "golangci-lint run"
+    success "Lint passed"
 
-task "ci" means "Runs the whole CI pipeline":
+task "vet" means "Runs the vet":
+    step "Vet"
+    run "go vet ./..."
+    success "Vet passed"
+
+task "fuzz" means "Runs the fuzz tests":
+    step "Fuzz - Grammar"
+    run "go test ./grammar/ -fuzz=FuzzApplyTransforms -fuzztime=30s"
+    step "Fuzz - Oniglib"
+    run "go test ./oniglib/ -fuzz=FuzzScannerFindNextMatch -fuzztime=30s"
+    step "Fuzz - Theme"
+    run "go test ./theme/ -fuzz=FuzzParse -fuzztime=30s"
+    success "Fuzz passed"
+
+task "security" means "Gosec":
+    step "Gosec"
+    run "gosec -exclude=G115,G304 ./..."
+    success "Security check passed"
+
+task "ci" means "Runs the routine CI pipeline (not too time consuming, routine)":
+	call task vet
 	call task test
 	call task lint
+	call task security
+
+task "ci-full" means "Runs the full CI pipeline including fuzzers and race tests":
+	call task vet
+	call task test-full
+	call task lint
+	call task security
+	call task fuzz

@@ -28,10 +28,16 @@ import (
 // per-match timeout bookkeeping in the hot path.
 var matchTimeout time.Duration = 0
 
-// neverMatch is a zero-width assertion that can never be satisfied (a position
-// cannot be both a word boundary and a non-word boundary). It is used to
-// neutralise \A or \G when the current scan position forbids them.
-const neverMatch = `\b\B`
+// neverMatch is a zero-width assertion that can never be satisfied (an empty
+// negative look-ahead fails at every position). It is used to neutralise \A or
+// \G when the current scan position forbids them.
+const neverMatch = `(?!)`
+
+// neverMatchInClass neutralises \A or \G when they appear inside a character
+// class, where an assertion like (?!) or \b\B is not valid. U+FFFF is a
+// non-character that effectively never occurs in real text, mirroring
+// vscode-textmate's use of \uFFFF as a never-matching sentinel.
+const neverMatchInClass = `\x{FFFF}`
 
 // compileOptions are applied to every pattern. We deliberately do NOT use
 // regexp2.RE2 so that the engine keeps its Oniguruma/PCRE-compatible behaviour
@@ -89,140 +95,264 @@ func NewRegex(source string) *Regex {
 	}
 }
 
-// normalizeOniguruma rewrites the Oniguruma-specific constructs that regexp2
-// rejects into equivalents:
+// normalizeOniguruma rewrites the Oniguruma-specific quantifier constructs that
+// regexp2 (.NET semantics) rejects or interprets differently into equivalents.
+// It works as a single forward pass that parses each quantifiable atom (escape,
+// character class, group/comment, or single character) followed by its optional
+// quantifier, so nested classes, (?#...) comments and interval bodies never
+// confuse the rewriter. The transformations applied (matching the default
+// ONIG_SYNTAX_ONIGURUMA syntax) are:
 //
-//   - possessive quantifiers (a++, a*+, a?+, a{n,m}+) are converted into
-//     atomic groups, e.g. a++  ->  (?>a+). This preserves the no-backtracking
-//     semantics of possessive matching, which is essential: rewriting them as
-//     plain greedy quantifiers can cause catastrophic backtracking on the large
-//     declaration/attribute patterns found in real grammars.
+//   - possessive single-char quantifiers a?+, a*+, a++  ->  atomic groups
+//     (?>a?), (?>a*), (?>a+). This preserves the no-backtracking semantics,
+//     which is essential to avoid catastrophic backtracking on real grammars.
+//   - reversed interval a{n,m} with n>m, which Oniguruma defines as the
+//     possessive form of {m,n}  ->  (?>a{m,n}).
+//   - interval followed by '+' (a{n}+, a{n,m}+, a{n,}+) which is NOT possessive
+//     in the default syntax  ->  (?:a{n})+, so regexp2 accepts it.
+//   - the {,n} form (== {0,n}) which .NET does not accept  ->  {0,n}.
 //
-// Char classes and escaped metacharacters are respected so literal quantifier
-// characters are left untouched.
+// Invalid braces such as a{abc}+ are left untouched: {abc} is a literal, so the
+// trailing '+' is an ordinary quantifier applied to the literal '}'.
 func normalizeOniguruma(source string) string {
 	rs := []rune(source)
 	out := make([]rune, 0, len(rs)+8)
-	inClass := false
-	for i := 0; i < len(rs); i++ {
-		c := rs[i]
-		if c == '\\' && i+1 < len(rs) {
-			out = append(out, c, rs[i+1])
+	i := 0
+	for i < len(rs) {
+		atomStart := len(out)
+		ae := scanAtom(rs, i)
+		out = append(out, rs[i:ae]...)
+		i = ae
+		if i >= len(rs) {
+			continue
+		}
+
+		switch rs[i] {
+		case '?', '*', '+':
+			out = append(out, rs[i])
 			i++
-			continue
-		}
-		if inClass {
-			out = append(out, c)
-			if c == ']' {
-				inClass = false
+			if i < len(rs) && rs[i] == '+' {
+				// Possessive (a?+, a*+, a++): wrap atom+quantifier atomically.
+				out = wrapGroup(out, atomStart, "(?>")
+				i++ // consume the possessive '+'
+			} else if i < len(rs) && rs[i] == '?' {
+				// Reluctant (a*?, a+?, a??): regexp2 supports these natively.
+				out = append(out, rs[i])
+				i++
 			}
-			continue
-		}
-		if c == '[' {
-			inClass = true
-			out = append(out, c)
-			continue
-		}
-		// A '+' immediately following a quantifier marks a possessive
-		// quantifier: wrap the already-emitted atom+quantifier atomically.
-		if c == '+' && len(out) > 0 {
-			switch out[len(out)-1] {
-			case '+', '*', '?', '}':
-				out = wrapAtomicTail(out)
+		case '{':
+			iv, ok := parseInterval(rs, i)
+			if !ok {
+				// Not a valid interval; '{' is a literal character.
+				out = append(out, rs[i])
+				i++
 				continue
 			}
+			switch {
+			case iv.reversed():
+				// Oniguruma: {n,m} with n>m is possessive of {m,n}.
+				out = append(out, []rune("{"+iv.hi+","+iv.lo+"}")...)
+				out = wrapGroup(out, atomStart, "(?>")
+				i = iv.end
+			case iv.end < len(rs) && rs[iv.end] == '+':
+				// {n}+, {n,m}+, {n,}+ are NOT possessive in the default syntax:
+				// the '+' is an ordinary quantifier applied to the interval.
+				out = append(out, []rune(iv.text())...)
+				out = wrapGroup(out, atomStart, "(?:")
+				out = append(out, '+')
+				i = iv.end + 1
+			default:
+				out = append(out, []rune(iv.text())...)
+				i = iv.end
+			}
 		}
-		out = append(out, c)
 	}
 	return string(out)
 }
 
-// wrapAtomicTail wraps the trailing "<atom><quantifier>" already present in out
-// with an atomic group: ...X<quant>  ->  ...(?>X<quant>). On any ambiguity it
-// falls back to leaving out unchanged (which degrades a possessive quantifier
-// to greedy rather than corrupting the pattern).
-func wrapAtomicTail(out []rune) []rune {
-	end := len(out)
-
-	// Locate the start of the quantifier token.
-	quantStart := end - 1
-	if out[end-1] == '}' {
-		quantStart = scanBackTo(out, end-1, '{')
-		if quantStart < 0 {
-			return out // unmatched: leave as greedy
-		}
-	}
-
-	// Locate the start of the atom the quantifier applies to.
-	atomEnd := quantStart
-	if atomEnd <= 0 {
-		return out
-	}
-	prev := out[atomEnd-1]
-	var atomStart int
-	switch prev {
-	case ')':
-		atomStart = matchBackward(out, atomEnd-1, '(', ')')
-	case ']':
-		atomStart = matchBackward(out, atomEnd-1, '[', ']')
-	default:
-		atomStart = atomEnd - 1
-		if atomStart > 0 && isEscaped(out, atomStart) {
-			atomStart-- // include the leading backslash of an escaped atom
-		}
-	}
-	if atomStart < 0 {
-		return out
-	}
-
-	result := make([]rune, 0, len(out)+4)
-	result = append(result, out[:atomStart]...)
-	result = append(result, '(', '?', '>')
-	result = append(result, out[atomStart:end]...)
-	result = append(result, ')')
-	return result
+// wrapGroup rewrites out so that the run from atomStart to the end is enclosed
+// in a group introduced by open (e.g. "(?>" or "(?:") and a closing ')'.
+func wrapGroup(out []rune, atomStart int, open string) []rune {
+	res := make([]rune, 0, len(out)+len(open)+1)
+	res = append(res, out[:atomStart]...)
+	res = append(res, []rune(open)...)
+	res = append(res, out[atomStart:]...)
+	res = append(res, ')')
+	return res
 }
 
-// scanBackTo returns the index of the nearest unescaped open rune at or before
-// from, or -1 if none.
-func scanBackTo(out []rune, from int, open rune) int {
-	for i := from; i >= 0; i-- {
-		if out[i] == open && !isEscaped(out, i) {
-			return i
+// scanAtom returns the index just past the quantifiable atom that begins at i.
+// An atom is an escape (with any \x{...}/\p{...}/\o{...} brace body), a
+// character class, a group (or (?#...) comment), or a single character.
+func scanAtom(rs []rune, i int) int {
+	switch rs[i] {
+	case '\\':
+		if i+1 >= len(rs) {
+			return i + 1
 		}
-	}
-	return -1
-}
-
-// matchBackward finds the matching open rune for a close rune at closeIdx,
-// honouring nesting and escapes, returning the open index or -1.
-func matchBackward(out []rune, closeIdx int, open, close rune) int {
-	depth := 0
-	for i := closeIdx; i >= 0; i-- {
-		if isEscaped(out, i) {
-			continue
-		}
-		switch out[i] {
-		case close:
-			depth++
-		case open:
-			depth--
-			if depth == 0 {
-				return i
+		end := i + 2
+		switch rs[i+1] {
+		case 'x', 'p', 'P', 'o':
+			if end < len(rs) && rs[end] == '{' {
+				for end < len(rs) && rs[end] != '}' {
+					end++
+				}
+				if end < len(rs) {
+					end++ // include the closing '}'
+				}
 			}
 		}
+		return end
+	case '[':
+		return scanClass(rs, i)
+	case '(':
+		return scanGroup(rs, i)
+	default:
+		return i + 1
 	}
-	return -1
 }
 
-// isEscaped reports whether the rune at index i is preceded by an odd number of
-// backslashes (and is therefore escaped).
-func isEscaped(out []rune, i int) bool {
-	n := 0
-	for j := i - 1; j >= 0 && out[j] == '\\'; j-- {
-		n++
+// scanClass returns the index just past the character class beginning at i
+// (rs[i] == '['). A ']' immediately after '[' or '[^' is a literal member, not
+// the terminator, mirroring Oniguruma ([]] == [\]]). Class scanning follows
+// .NET semantics: '[' inside a class is literal and the first subsequent
+// unescaped ']' closes it.
+func scanClass(rs []rune, i int) int {
+	j := i + 1
+	if j < len(rs) && rs[j] == '^' {
+		j++
 	}
-	return n%2 == 1
+	if j < len(rs) && rs[j] == ']' {
+		j++ // leading ']' is a literal member
+	}
+	for j < len(rs) {
+		switch rs[j] {
+		case '\\':
+			j += 2
+			continue
+		case ']':
+			return j + 1
+		}
+		j++
+	}
+	return j // unterminated; caller emits the remainder verbatim
+}
+
+// scanGroup returns the index just past the group beginning at i (rs[i] ==
+// '('). A (?#...) comment ends at the first unescaped ')'. Nested groups and
+// character classes are skipped so their parentheses do not unbalance the scan.
+func scanGroup(rs []rune, i int) int {
+	if i+2 < len(rs) && rs[i+1] == '?' && rs[i+2] == '#' {
+		j := i + 3
+		for j < len(rs) {
+			if rs[j] == '\\' {
+				j += 2
+				continue
+			}
+			if rs[j] == ')' {
+				return j + 1
+			}
+			j++
+		}
+		return j
+	}
+	j := i + 1
+	for j < len(rs) {
+		switch rs[j] {
+		case '\\':
+			j += 2
+			continue
+		case '[':
+			j = scanClass(rs, j)
+			continue
+		case '(':
+			j = scanGroup(rs, j)
+			continue
+		case ')':
+			return j + 1
+		}
+		j++
+	}
+	return j // unterminated
+}
+
+// interval describes a parsed {..} quantifier body.
+type interval struct {
+	lo, hi   string // raw digit runs ("" when omitted)
+	hasComma bool
+	end      int // index just past the closing '}'
+}
+
+// reversed reports whether the interval is a reversed range {n,m} with n>m,
+// which Oniguruma treats as the possessive form of {m,n}.
+func (iv interval) reversed() bool {
+	if !iv.hasComma || iv.lo == "" || iv.hi == "" {
+		return false
+	}
+	lo, hi := atoiClamp(iv.lo), atoiClamp(iv.hi)
+	return lo > hi
+}
+
+// text returns the .NET-acceptable rendering of the interval. The {,n} form is
+// rewritten to {0,n} because .NET does not accept an omitted minimum.
+func (iv interval) text() string {
+	switch {
+	case !iv.hasComma:
+		return "{" + iv.lo + "}"
+	case iv.hi == "":
+		return "{" + iv.lo + ",}"
+	case iv.lo == "":
+		return "{0," + iv.hi + "}"
+	default:
+		return "{" + iv.lo + "," + iv.hi + "}"
+	}
+}
+
+// parseInterval parses a quantifier interval beginning at rs[i] == '{'. It
+// returns ok=false when the braces do not form a valid Oniguruma interval (so
+// the '{' must be treated as a literal). Valid forms: {n}, {n,}, {,m}, {n,m}.
+func parseInterval(rs []rune, i int) (interval, bool) {
+	j := i + 1
+	var iv interval
+	for j < len(rs) && rs[j] >= '0' && rs[j] <= '9' {
+		iv.lo += string(rs[j])
+		j++
+	}
+	if j < len(rs) && rs[j] == ',' {
+		iv.hasComma = true
+		j++
+		for j < len(rs) && rs[j] >= '0' && rs[j] <= '9' {
+			iv.hi += string(rs[j])
+			j++
+		}
+	}
+	if j >= len(rs) || rs[j] != '}' {
+		return interval{}, false
+	}
+	// Reject empty bodies: {} and {,} are not quantifiers.
+	if iv.hasComma {
+		if iv.lo == "" && iv.hi == "" {
+			return interval{}, false
+		}
+	} else if iv.lo == "" {
+		return interval{}, false
+	}
+	iv.end = j + 1
+	return iv, true
+}
+
+// atoiClamp parses a (possibly long) digit run, clamping overflow to a large
+// value so that only the lo>hi ordering decision is affected.
+func atoiClamp(s string) int {
+	const cap = 1 << 30
+	n := 0
+	for _, r := range s {
+		n = n*10 + int(r-'0')
+		if n >= cap {
+			return cap
+		}
+	}
+	return n
 }
 
 // Source returns the original pattern text.
@@ -389,11 +519,17 @@ func SubstituteBackRefs(source string, captured []string) string {
 		if c == '\\' && i+1 < len(rs) {
 			n := rs[i+1]
 			if n >= '0' && n <= '9' {
-				idx := int(n - '0')
+				// Consume the whole digit run: \12 is group 12 and \00001 is
+				// group 1 (leading zeros are allowed). \0 is the whole match.
+				j := i + 1
+				for j < len(rs) && rs[j] >= '0' && rs[j] <= '9' {
+					j++
+				}
+				idx := atoiClamp(string(rs[i+1 : j]))
 				if idx < len(captured) {
 					b.WriteString(escapeRegex(captured[idx]))
 				}
-				i++
+				i = j - 1
 				continue
 			}
 			// Preserve other escapes verbatim (e.g. \\ , \w).
@@ -457,15 +593,22 @@ func containsAnchor(source string, letter rune) bool {
 }
 
 // neutralizeAnchor replaces every \<letter> assertion with a never-matching
-// assertion, leaving escaped backslashes untouched.
+// construct, leaving escaped backslashes untouched. Inside a character class a
+// zero-width assertion is not valid, so a never-occurring codepoint is used
+// instead (see neverMatchInClass).
 func neutralizeAnchor(source string, letter rune) string {
 	var b strings.Builder
 	rs := []rune(source)
+	inClass := false
 	for i := 0; i < len(rs); i++ {
 		if rs[i] == '\\' && i+1 < len(rs) {
 			n := rs[i+1]
 			if n == letter {
-				b.WriteString(neverMatch)
+				if inClass {
+					b.WriteString(neverMatchInClass)
+				} else {
+					b.WriteString(neverMatch)
+				}
 				i++
 				continue
 			}
@@ -473,6 +616,14 @@ func neutralizeAnchor(source string, letter rune) string {
 			b.WriteRune(n)
 			i++
 			continue
+		}
+		switch rs[i] {
+		case '[':
+			if !inClass {
+				inClass = true
+			}
+		case ']':
+			inClass = false
 		}
 		b.WriteRune(rs[i])
 	}
